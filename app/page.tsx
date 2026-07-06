@@ -27,6 +27,7 @@ export default function Home() {
   const [cloudReady, setCloudReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 6000); };
 
@@ -84,8 +85,9 @@ export default function Home() {
   const signIn = async () => {
     if (!supabase) { notify('Supabase не подключен'); return; }
     if (!email.trim()) { notify('Введи email'); return; }
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } });
-    notify(error ? `Ошибка входа: ${error.message}` : 'Проверь почту: ссылка для входа отправлена');
+    if (password.length < 6) { notify('Пароль минимум 6 символов'); return; }
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    notify(error ? `Ошибка входа: ${error.message}` : 'Вход выполнен');
   };
   const signOut = async () => { if (supabase) await supabase.auth.signOut(); setUser(null); setCloudReady(false); notify('Выход выполнен'); };
 
@@ -101,7 +103,7 @@ export default function Home() {
   const moveTask = (id: string, column: KanbanColumn) => update(d => { if (column === 'doing' && d.tasks.filter(t => t.column === 'doing' && t.id !== id).length >= 3) { notify('Сначала заверши или убери одну задачу. СДВГ не любит перегруз.'); return d; } const t = d.tasks.find(x => x.id === id); if (t) t.column = column; return d; }, 'Задача перенесена');
 
   return <main className="min-h-screen bg-base p-4 md:p-8"><div className="mx-auto max-w-7xl">
-    <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between"><div><p className="text-sm font-bold uppercase tracking-[.35em] text-accent">ADHD Focus OS</p><h1 className="mt-2 text-4xl font-black md:text-6xl">План без шума</h1></div><div className="flex flex-col gap-3 md:w-[360px]"><AuthPanel email={email} setEmail={setEmail} user={user} cloudReady={cloudReady} signIn={signIn} signOut={signOut} /><Button onClick={resetData} className="bg-white/10 hover:bg-white/20">Сброс данных</Button></div></header>
+    <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between"><div><p className="text-sm font-bold uppercase tracking-[.35em] text-accent">ADHD Focus OS</p><h1 className="mt-2 text-4xl font-black md:text-6xl">План без шума</h1></div><div className="flex flex-col gap-3 md:w-[360px]"><AuthPanel email={email} setEmail={setEmail} password={password} setPassword={setPassword} user={user} cloudReady={cloudReady} signIn={signIn} signOut={signOut} /><Button onClick={resetData} className="bg-white/10 hover:bg-white/20">Сброс данных</Button></div></header>
     <nav className="mb-6 flex gap-2 overflow-x-auto pb-2 scrollbar-thin">{[['dashboard', 'Дашборд'], ['inbox', 'Инбокс'], ['kanban', 'Kanban'], ['sprint', 'Спринт'], ['okr', 'OKR'], ['review', 'Ревью']].map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`whitespace-nowrap rounded-2xl px-4 py-3 font-bold ${tab === id ? 'bg-accent' : 'bg-card text-muted'}`}>{label}</button>)}</nav>
     {toast && <div className="fixed right-4 top-4 z-50 max-w-xl rounded-2xl bg-accent px-5 py-3 font-bold shadow-xl">{toast}</div>}
     {tab === 'dashboard' && <Dashboard data={data} update={update} todayTasks={todayTasks} doing={doing} todayMetrics={todayMetrics} weekPct={weekPct} setTab={setTab} addTask={addTask} />}
@@ -113,10 +115,10 @@ export default function Home() {
   </div></main>;
 }
 
-function AuthPanel({ email, setEmail, user, cloudReady, signIn, signOut }: { email: string; setEmail: (v: string) => void; user: User | null; cloudReady: boolean; signIn: () => void; signOut: () => void }) {
+function AuthPanel({ email, setEmail, password, setPassword, user, cloudReady, signIn, signOut }: { email: string; setEmail: (v: string) => void; password: string; setPassword: (v: string) => void; user: User | null; cloudReady: boolean; signIn: () => void; signOut: () => void }) {
   if (!hasSupabaseConfig) return <Card><p className="text-sm text-muted">Облако не подключено. Работает только это устройство.</p></Card>;
   if (user) return <Card><p className="text-sm text-muted">Облако: {cloudReady ? 'синхронизировано' : 'загрузка...'}</p><p className="mt-1 truncate font-bold">{user.email}</p><Button onClick={signOut} className="mt-3 w-full bg-white/10 hover:bg-white/20">Выйти</Button></Card>;
-  return <Card><p className="text-sm text-muted">Вход для синхронизации</p><div className="mt-3 flex gap-2"><Field type="email" placeholder="email" value={email} onChange={e => setEmail(e.target.value)} /><Button onClick={signIn}>Войти</Button></div></Card>;
+  return <Card><p className="text-sm text-muted">Вход для синхронизации</p><div className="mt-3 grid gap-2"><Field type="email" placeholder="email" value={email} onChange={e => setEmail(e.target.value)} /><Field type="password" placeholder="пароль" value={password} onChange={e => setPassword(e.target.value)} /><Button onClick={signIn}>Войти</Button></div></Card>;
 }
 
 function Empty({ text }: { text: string }) { return <p className="mt-4 rounded-2xl border border-dashed border-white/10 p-5 text-muted">{text}</p>; }
