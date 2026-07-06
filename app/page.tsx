@@ -28,13 +28,13 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [email, setEmail] = useState('');
 
-  const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 2400); };
+  const notify = (m: string) => { setToast(m); setTimeout(() => setToast(''), 6000); };
 
   const loadCloudData = async (userId: string) => {
     if (!supabase) return;
     setCloudReady(false);
     const { data: row, error } = await supabase.from('app_state').select('data').eq('user_id', userId).maybeSingle();
-    if (error) notify('Ошибка загрузки облака');
+    if (error) notify(`Ошибка загрузки облака: ${error.message}`);
     if (row?.data) {
       setData(row.data as AppData);
     } else {
@@ -65,10 +65,7 @@ export default function Home() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data, hydrated]);
+  useEffect(() => { if (hydrated) localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }, [data, hydrated]);
 
   useEffect(() => {
     if (!supabase || !user || !cloudReady) return;
@@ -76,7 +73,7 @@ export default function Home() {
     const userId = user.id;
     const timer = setTimeout(() => {
       client.from('app_state').upsert({ user_id: userId, data, updated_at: new Date().toISOString() }).then(({ error }) => {
-        if (error) notify('Ошибка сохранения в облако');
+        if (error) notify(`Ошибка сохранения в облако: ${error.message}`);
       });
     }, 500);
     return () => clearTimeout(timer);
@@ -85,9 +82,10 @@ export default function Home() {
   const update: UpdateFn = (fn, msg) => setData(d => { const next = fn(structuredClone(d)); if (msg) setTimeout(() => notify(msg), 0); return next; });
   const resetData = () => { const fresh = demoData(); localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh)); setData(fresh); setTab('dashboard'); notify('Данные сброшены'); };
   const signIn = async () => {
-    if (!supabase || !email) return;
-    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    notify(error ? 'Ошибка входа' : 'Проверь почту: ссылка для входа отправлена');
+    if (!supabase) { notify('Supabase не подключен'); return; }
+    if (!email.trim()) { notify('Введи email'); return; }
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } });
+    notify(error ? `Ошибка входа: ${error.message}` : 'Проверь почту: ссылка для входа отправлена');
   };
   const signOut = async () => { if (supabase) await supabase.auth.signOut(); setUser(null); setCloudReady(false); notify('Выход выполнен'); };
 
@@ -105,7 +103,7 @@ export default function Home() {
   return <main className="min-h-screen bg-base p-4 md:p-8"><div className="mx-auto max-w-7xl">
     <header className="mb-8 flex flex-col gap-4 md:flex-row md:items-start md:justify-between"><div><p className="text-sm font-bold uppercase tracking-[.35em] text-accent">ADHD Focus OS</p><h1 className="mt-2 text-4xl font-black md:text-6xl">План без шума</h1></div><div className="flex flex-col gap-3 md:w-[360px]"><AuthPanel email={email} setEmail={setEmail} user={user} cloudReady={cloudReady} signIn={signIn} signOut={signOut} /><Button onClick={resetData} className="bg-white/10 hover:bg-white/20">Сброс данных</Button></div></header>
     <nav className="mb-6 flex gap-2 overflow-x-auto pb-2 scrollbar-thin">{[['dashboard', 'Дашборд'], ['inbox', 'Инбокс'], ['kanban', 'Kanban'], ['sprint', 'Спринт'], ['okr', 'OKR'], ['review', 'Ревью']].map(([id, label]) => <button key={id} onClick={() => setTab(id)} className={`whitespace-nowrap rounded-2xl px-4 py-3 font-bold ${tab === id ? 'bg-accent' : 'bg-card text-muted'}`}>{label}</button>)}</nav>
-    {toast && <div className="fixed right-4 top-4 z-50 rounded-2xl bg-accent px-5 py-3 font-bold shadow-xl">{toast}</div>}
+    {toast && <div className="fixed right-4 top-4 z-50 max-w-xl rounded-2xl bg-accent px-5 py-3 font-bold shadow-xl">{toast}</div>}
     {tab === 'dashboard' && <Dashboard data={data} update={update} todayTasks={todayTasks} doing={doing} todayMetrics={todayMetrics} weekPct={weekPct} setTab={setTab} addTask={addTask} />}
     {tab === 'inbox' && <Inbox data={data} update={update} />}
     {tab === 'kanban' && <Kanban data={data} update={update} moveTask={moveTask} addTask={addTask} />}
