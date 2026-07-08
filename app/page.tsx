@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import {
   AppData,
-  DayMark,
+  DailyMinimum,
   Idea,
   IdeaCategory,
   IdeaStatus,
@@ -13,6 +13,7 @@ import {
   Review,
   STORAGE_KEY,
   Task,
+  defaultDailyMinimum,
   demoData,
   emptyMetrics,
   todayISO,
@@ -28,84 +29,100 @@ const columns: Record<KanbanColumn, string> = {
 };
 
 const metricLabels: Record<keyof Metrics, string> = {
-  touches: 'новые касания',
+  calls: 'звонки новым клиентам',
+  messages: 'сообщения новым клиентам',
   followUps: 'follow-up',
-  calls: 'звонки',
-  content: 'контент',
+  scripts: 'сценарии для рилса',
+  content: 'единицы контента',
+  touches: 'новые касания',
   money: 'деньги',
   leads: 'лиды',
   meetings: 'встречи',
   activeClients: 'клиенты в работе',
 };
 
+const minimumKeys: (keyof DailyMinimum)[] = ['calls', 'messages', 'followUps', 'scripts', 'content'];
+const factsKeys: (keyof Metrics)[] = ['calls', 'messages', 'followUps', 'scripts', 'content', 'money', 'leads', 'meetings', 'activeClients'];
 const cats: IdeaCategory[] = ['деньги', 'недвижимость', 'контент', 'фото', '3D', 'другое'];
 const statuses: IdeaStatus[] = ['новая', 'отложена', 'выбрана', 'закрыта'];
 const uid = () => crypto.randomUUID();
 const pct = (a: number, b: number) => Math.min(100, Math.round((a / Math.max(1, b)) * 100));
+const money = (n: number) => new Intl.NumberFormat('ru-RU').format(n);
 
 type UpdateFn = (fn: (d: AppData) => AppData, msg?: string) => void;
 
-function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return (
-    <section className={`rounded-[28px] border border-white/5 bg-card p-5 shadow-2xl shadow-black/20 ${className}`}>
-      {children}
-    </section>
-  );
+function normalizeData(raw: AppData): AppData {
+  const d = structuredClone(raw);
+  const minimum = defaultDailyMinimum();
+  d.dailyMinimum = { ...minimum, ...(d.dailyMinimum || {}) };
+  d.sprint.dailyMetrics ||= {};
+  d.sprint.dayMarks ||= {};
+  d.sprint.taskIds ||= [];
+  d.okr ||= demoData().okr;
+  d.okr.objective = 'Денежный ориентир и рабочие цифры на 4 недели.';
+
+  const defaultKrs = demoData().okr.keyResults;
+  d.okr.keyResults = defaultKrs.map((def) => {
+    const existing = d.okr.keyResults?.find((kr) => kr.id === def.id);
+    return { ...def, current: existing?.current ?? def.current, target: def.id === 'kr5' ? 3000000 : existing?.target ?? def.target };
+  });
+
+  Object.keys(d.sprint.dailyMetrics).forEach((day) => {
+    d.sprint.dailyMetrics[day] = { ...emptyMetrics(), ...d.sprint.dailyMetrics[day] };
+  });
+
+  return d;
 }
 
-function Button({
-  children,
-  onClick,
-  type = 'button',
-  className = '',
-  disabled = false,
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  type?: 'button' | 'submit';
-  className?: string;
-  disabled?: boolean;
-}) {
+function isDayComplete(metrics: Metrics, minimum: DailyMinimum) {
+  return minimumKeys.every((k) => (metrics[k] ?? 0) >= (minimum[k] ?? 0));
+}
+
+function completedMinimumCount(metrics: Metrics, minimum: DailyMinimum) {
+  return minimumKeys.filter((k) => (metrics[k] ?? 0) >= (minimum[k] ?? 0)).length;
+}
+
+function calcStreak(data: AppData) {
+  let streak = 0;
+  const cursor = new Date(todayISO());
+  for (let i = 0; i < 60; i++) {
+    const day = cursor.toISOString().slice(0, 10);
+    const metrics = data.sprint.dailyMetrics[day] || emptyMetrics();
+    if (!isDayComplete(metrics, data.dailyMinimum)) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
+}
+
+function syncDayMark(d: AppData, day: string) {
+  const metrics = { ...emptyMetrics(), ...(d.sprint.dailyMetrics[day] || {}) };
+  d.sprint.dailyMetrics[day] = metrics;
+  d.sprint.dayMarks[day] = isDayComplete(metrics, d.dailyMinimum) ? 1 : 0;
+}
+
+function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return <section className={`rounded-[28px] border border-white/5 bg-card p-5 shadow-2xl shadow-black/20 ${className}`}>{children}</section>;
+}
+
+function Button({ children, onClick, type = 'button', className = '', disabled = false }: { children: React.ReactNode; onClick?: () => void; type?: 'button' | 'submit'; className?: string; disabled?: boolean }) {
   return (
-    <button
-      disabled={disabled}
-      type={type}
-      onClick={onClick}
-      className={`rounded-2xl px-4 py-3 font-semibold transition ${disabled ? 'cursor-not-allowed bg-white/5 text-muted' : 'bg-accent text-white hover:scale-[1.02] hover:bg-orange-500'} ${className}`}
-    >
+    <button disabled={disabled} type={type} onClick={onClick} className={`rounded-2xl px-4 py-3 font-semibold transition ${disabled ? 'cursor-not-allowed bg-white/5 text-muted' : 'bg-accent text-white hover:scale-[1.02] hover:bg-orange-500'} ${className}`}>
       {children}
     </button>
   );
 }
 
 function GhostButton({ children, onClick, className = '' }: { children: React.ReactNode; onClick?: () => void; className?: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10 ${className}`}
-    >
-      {children}
-    </button>
-  );
+  return <button type="button" onClick={onClick} className={`rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10 ${className}`}>{children}</button>;
 }
 
 function Field(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className={`w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-white placeholder:text-muted ${props.className || ''}`}
-    />
-  );
+  return <input {...props} className={`w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-white placeholder:text-muted ${props.className || ''}`} />;
 }
 
 function Area(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      className="min-h-24 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-white placeholder:text-muted"
-    />
-  );
+  return <textarea {...props} className="min-h-24 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-white placeholder:text-muted" />;
 }
 
 function Progress({ value }: { value: number }) {
@@ -138,16 +155,12 @@ export default function Home() {
     if (error) notify(`Ошибка загрузки облака: ${error.message}`);
 
     if (row?.data) {
-      setData(row.data as AppData);
+      setData(normalizeData(row.data as AppData));
     } else {
       const local = localStorage.getItem(STORAGE_KEY);
-      const initial = local ? (JSON.parse(local) as AppData) : demoData();
+      const initial = normalizeData(local ? (JSON.parse(local) as AppData) : demoData());
       setData(initial);
-      await supabase.from('app_state').upsert({
-        user_id: userId,
-        data: initial,
-        updated_at: new Date().toISOString(),
-      });
+      await supabase.from('app_state').upsert({ user_id: userId, data: initial, updated_at: new Date().toISOString() });
     }
 
     setCloudReady(true);
@@ -155,7 +168,7 @@ export default function Home() {
 
   useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) setData(JSON.parse(raw));
+    if (raw) setData(normalizeData(JSON.parse(raw)));
     setHydrated(true);
 
     if (!supabase) return;
@@ -185,19 +198,16 @@ export default function Home() {
     const client = supabase;
     const userId = user.id;
     const timer = setTimeout(() => {
-      client
-        .from('app_state')
-        .upsert({ user_id: userId, data, updated_at: new Date().toISOString() })
-        .then(({ error }) => {
-          if (error) notify(`Ошибка сохранения в облако: ${error.message}`);
-        });
+      client.from('app_state').upsert({ user_id: userId, data, updated_at: new Date().toISOString() }).then(({ error }) => {
+        if (error) notify(`Ошибка сохранения в облако: ${error.message}`);
+      });
     }, 500);
     return () => clearTimeout(timer);
   }, [data, user, cloudReady]);
 
   const update: UpdateFn = (fn, msg) =>
     setData((current) => {
-      const next = fn(structuredClone(current));
+      const next = normalizeData(fn(structuredClone(current)));
       if (msg) setTimeout(() => notify(msg), 0);
       return next;
     });
@@ -211,18 +221,9 @@ export default function Home() {
   };
 
   const signIn = async () => {
-    if (!supabase) {
-      notify('Supabase не подключен');
-      return;
-    }
-    if (!email.trim()) {
-      notify('Введи email');
-      return;
-    }
-    if (password.length < 6) {
-      notify('Пароль минимум 6 символов');
-      return;
-    }
+    if (!supabase) return notify('Supabase не подключен');
+    if (!email.trim()) return notify('Введи email');
+    if (password.length < 6) return notify('Пароль минимум 6 символов');
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     notify(error ? `Ошибка входа: ${error.message}` : 'Вход выполнен');
   };
@@ -239,7 +240,10 @@ export default function Home() {
   const doing = data.tasks.filter((t) => t.column === 'doing');
   const doneWeek = data.tasks.filter((t) => data.sprint.taskIds.includes(t.id) && t.done).length;
   const weekPct = pct(doneWeek, data.sprint.taskIds.length);
-  const todayMetrics = data.sprint.dailyMetrics[today] || emptyMetrics();
+  const todayMetrics = { ...emptyMetrics(), ...(data.sprint.dailyMetrics[today] || {}) };
+  const streak = calcStreak(data);
+  const todayComplete = isDayComplete(todayMetrics, data.dailyMinimum);
+  const todayMinimumCount = completedMinimumCount(todayMetrics, data.dailyMinimum);
   const weekDays = useMemo(
     () =>
       Array.from({ length: 7 }, (_, i) => {
@@ -250,13 +254,13 @@ export default function Home() {
     [data.sprint.startDate],
   );
 
-  const addTask = (title: string, column: KanbanColumn = 'ideas') =>
+  const addTask = (title: string, column: KanbanColumn = 'ideas', description = '') =>
     update((d) => {
       if (column === 'doing' && d.tasks.filter((t) => t.column === 'doing').length >= 3) {
         notify('Сначала заверши или убери одну задачу. СДВГ не любит перегруз.');
         return d;
       }
-      const task: Task = { id: uid(), title, description: '', column, done: false, createdAt: todayISO() };
+      const task: Task = { id: uid(), title, description, column, done: false, createdAt: todayISO() };
       d.tasks.unshift(task);
       d.sprint.taskIds.push(task.id);
       return d;
@@ -287,7 +291,6 @@ export default function Home() {
     if (title === null) return;
     const goal = prompt('Цель спринта на эту неделю', data.sprint.goal);
     if (goal === null) return;
-
     update((d) => {
       d.sprint.title = title.trim() || d.sprint.title;
       d.sprint.goal = goal.trim();
@@ -304,19 +307,8 @@ export default function Home() {
             <h1 className="mt-2 text-4xl font-black md:text-6xl">План без шума</h1>
           </div>
           <div className="flex flex-col gap-3 md:w-[360px]">
-            <AuthPanel
-              email={email}
-              setEmail={setEmail}
-              password={password}
-              setPassword={setPassword}
-              user={user}
-              cloudReady={cloudReady}
-              signIn={signIn}
-              signOut={signOut}
-            />
-            <Button onClick={resetData} className="bg-white/10 hover:bg-white/20">
-              Сброс данных
-            </Button>
+            <AuthPanel email={email} setEmail={setEmail} password={password} setPassword={setPassword} user={user} cloudReady={cloudReady} signIn={signIn} signOut={signOut} />
+            <Button onClick={resetData} className="bg-white/10 hover:bg-white/20">Сброс данных</Button>
           </div>
         </header>
 
@@ -326,98 +318,28 @@ export default function Home() {
             ['inbox', 'Инбокс'],
             ['kanban', 'Kanban'],
             ['sprint', 'Спринт'],
-            ['okr', 'OKR'],
             ['review', 'Ревью'],
           ].map(([id, label]) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`whitespace-nowrap rounded-2xl px-4 py-3 font-bold ${tab === id ? 'bg-accent' : 'bg-card text-muted'}`}
-            >
-              {label}
-            </button>
+            <button key={id} onClick={() => setTab(id)} className={`whitespace-nowrap rounded-2xl px-4 py-3 font-bold ${tab === id ? 'bg-accent' : 'bg-card text-muted'}`}>{label}</button>
           ))}
         </nav>
 
-        {toast && (
-          <div className="fixed right-4 top-4 z-50 max-w-xl rounded-2xl bg-accent px-5 py-3 font-bold shadow-xl">
-            {toast}
-          </div>
-        )}
+        {toast && <div className="fixed right-4 top-4 z-50 max-w-xl rounded-2xl bg-accent px-5 py-3 font-bold shadow-xl">{toast}</div>}
 
-        {tab === 'dashboard' && (
-          <Dashboard
-            data={data}
-            update={update}
-            todayTasks={todayTasks}
-            doing={doing}
-            todayMetrics={todayMetrics}
-            weekPct={weekPct}
-            setTab={setTab}
-            addTask={addTask}
-            editMainGoal={editMainGoal}
-            editSprint={editSprint}
-          />
-        )}
+        {tab === 'dashboard' && <Dashboard data={data} update={update} todayTasks={todayTasks} doing={doing} todayMetrics={todayMetrics} weekPct={weekPct} setTab={setTab} addTask={addTask} editMainGoal={editMainGoal} editSprint={editSprint} streak={streak} todayComplete={todayComplete} todayMinimumCount={todayMinimumCount} />}
         {tab === 'inbox' && <Inbox data={data} update={update} />}
         {tab === 'kanban' && <Kanban data={data} update={update} moveTask={moveTask} addTask={addTask} />}
         {tab === 'sprint' && <Sprint data={data} update={update} weekDays={weekDays} />}
-        {tab === 'okr' && <OKRView data={data} update={update} />}
         {tab === 'review' && <ReviewView data={data} update={update} weekPct={weekPct} />}
       </div>
     </main>
   );
 }
 
-function AuthPanel({
-  email,
-  setEmail,
-  password,
-  setPassword,
-  user,
-  cloudReady,
-  signIn,
-  signOut,
-}: {
-  email: string;
-  setEmail: (v: string) => void;
-  password: string;
-  setPassword: (v: string) => void;
-  user: User | null;
-  cloudReady: boolean;
-  signIn: () => void;
-  signOut: () => void;
-}) {
-  if (!hasSupabaseConfig) {
-    return (
-      <Card>
-        <p className="text-sm text-muted">Облако не подключено. Работает только это устройство.</p>
-      </Card>
-    );
-  }
-
-  if (user) {
-    return (
-      <Card>
-        <p className="text-sm text-muted">Облако: {cloudReady ? 'синхронизировано' : 'загрузка...'}</p>
-        <p className="mt-1 truncate font-bold">{user.email}</p>
-        <Button onClick={signOut} className="mt-3 w-full bg-white/10 hover:bg-white/20">
-          Выйти
-        </Button>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <p className="text-sm text-muted">Вход для синхронизации</p>
-      <div className="mt-3 grid gap-2">
-        <Field type="email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <Field type="password" placeholder="пароль" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <Button onClick={signIn}>Войти</Button>
-      </div>
-    </Card>
-  );
+function AuthPanel({ email, setEmail, password, setPassword, user, cloudReady, signIn, signOut }: { email: string; setEmail: (v: string) => void; password: string; setPassword: (v: string) => void; user: User | null; cloudReady: boolean; signIn: () => void; signOut: () => void }) {
+  if (!hasSupabaseConfig) return <Card><p className="text-sm text-muted">Облако не подключено. Работает только это устройство.</p></Card>;
+  if (user) return <Card><p className="text-sm text-muted">Облако: {cloudReady ? 'синхронизировано' : 'загрузка...'}</p><p className="mt-1 truncate font-bold">{user.email}</p><Button onClick={signOut} className="mt-3 w-full bg-white/10 hover:bg-white/20">Выйти</Button></Card>;
+  return <Card><p className="text-sm text-muted">Вход для синхронизации</p><div className="mt-3 grid gap-2"><Field type="email" placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} /><Field type="password" placeholder="пароль" value={password} onChange={(e) => setPassword(e.target.value)} /><Button onClick={signIn}>Войти</Button></div></Card>;
 }
 
 function Empty({ text }: { text: string }) {
@@ -428,564 +350,155 @@ function TaskRow({ t, update }: { t: Task; update: UpdateFn }) {
   return (
     <div className="mt-3 rounded-2xl bg-black/20 p-3">
       <label className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          checked={t.done}
-          onChange={() =>
-            update((d) => {
-              const x = d.tasks.find((a) => a.id === t.id);
-              if (x) {
-                x.done = !x.done;
-                if (x.done) x.column = 'done';
-              }
-              return d;
-            }, 'Сохранено')
-          }
-        />
+        <input type="checkbox" checked={t.done} onChange={() => update((d) => { const x = d.tasks.find((a) => a.id === t.id); if (x) { x.done = !x.done; if (x.done) x.column = 'done'; } return d; }, 'Сохранено')} />
         <span className={t.done ? 'text-muted line-through' : ''}>{t.title}</span>
       </label>
     </div>
   );
 }
 
-function Dashboard({
-  data,
-  update,
-  todayTasks,
-  doing,
-  todayMetrics,
-  weekPct,
-  setTab,
-  addTask,
-  editMainGoal,
-  editSprint,
-}: {
-  data: AppData;
-  update: UpdateFn;
-  todayTasks: Task[];
-  doing: Task[];
-  todayMetrics: Metrics;
-  weekPct: number;
-  setTab: (tab: string) => void;
-  addTask: (title: string, column: KanbanColumn) => void;
-  editMainGoal: () => void;
-  editSprint: () => void;
-}) {
+function Dashboard({ data, update, todayTasks, doing, todayMetrics, weekPct, setTab, addTask, editMainGoal, editSprint, streak, todayComplete, todayMinimumCount }: { data: AppData; update: UpdateFn; todayTasks: Task[]; doing: Task[]; todayMetrics: Metrics; weekPct: number; setTab: (tab: string) => void; addTask: (title: string, column: KanbanColumn) => void; editMainGoal: () => void; editSprint: () => void; streak: number; todayComplete: boolean; todayMinimumCount: number }) {
   const today = todayISO();
+  const dopaminePoints = minimumKeys.reduce((sum, k) => sum + Math.min(100, Math.round(((todayMetrics[k] ?? 0) / Math.max(1, data.dailyMinimum[k])) * 20)), 0);
 
   return (
     <section className="grid gap-5 lg:grid-cols-3">
       <Card className="lg:col-span-2">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div className="max-w-3xl">
-            <p className="text-muted">Главная цель на 4 недели</p>
-            <h2 className="mt-2 text-3xl font-black">{data.mainGoal}</h2>
-          </div>
+          <div className="max-w-3xl"><p className="text-muted">Главная цель на 4 недели</p><h2 className="mt-2 text-3xl font-black">{data.mainGoal}</h2></div>
           <GhostButton onClick={editMainGoal}>Редактировать цель</GhostButton>
         </div>
 
         <div className="mt-6 rounded-3xl border border-white/5 bg-black/20 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div>
-              <p className="text-sm uppercase tracking-[0.2em] text-muted">Недельный спринт</p>
-              <p className="mt-1 text-xl font-black">{data.sprint.title}</p>
-              <p className="mt-2 text-sm text-muted">Цель спринта</p>
-              <p className="text-base font-medium">{data.sprint.goal || 'Цель спринта пока не задана'}</p>
-              <p className="mt-2 text-xs text-muted">
-                {data.sprint.startDate} — {data.sprint.endDate}
-              </p>
-            </div>
+            <div><p className="text-sm uppercase tracking-[0.2em] text-muted">Недельный спринт</p><p className="mt-1 text-xl font-black">{data.sprint.title}</p><p className="mt-2 text-sm text-muted">Цель спринта</p><p className="text-base font-medium">{data.sprint.goal || 'Цель спринта пока не задана'}</p><p className="mt-2 text-xs text-muted">{data.sprint.startDate} — {data.sprint.endDate}</p></div>
             <GhostButton onClick={editSprint}>Редактировать спринт</GhostButton>
           </div>
-
-          <div className="mt-5">
-            <div className="mb-2 flex justify-between">
-              <b>{data.sprint.title}</b>
-              <b>{weekPct}%</b>
-            </div>
-            <Progress value={weekPct} />
-          </div>
+          <div className="mt-5"><div className="mb-2 flex justify-between"><b>{data.sprint.title}</b><b>{weekPct}%</b></div><Progress value={weekPct} /></div>
         </div>
       </Card>
 
       <Card>
-        <p className="text-muted">Дней не слито</p>
-        <div className="mt-2 text-7xl font-black text-accent">{data.noWasteDays}</div>
-        <Button
-          onClick={() =>
-            update((d) => {
-              d.noWasteDays++;
-              d.sprint.dayMarks[today] = Math.max(d.sprint.dayMarks[today] || 0, 1) as DayMark;
-              return d;
-            }, 'День отмечен')
-          }
-          className="mt-4 w-full"
-        >
-          Отметить день
-        </Button>
+        <p className="text-muted">Рабочая серия</p>
+        <div className="mt-2 text-7xl font-black text-accent">{streak}</div>
+        <p className="mt-3 font-bold">Сегодня: {todayComplete ? 'минимум выполнен' : 'минимум не выполнен'}</p>
+        <p className="mt-1 text-muted">{todayMinimumCount}/5 пунктов закрыто автоматически</p>
+        <Progress value={pct(todayMinimumCount, 5)} />
+      </Card>
+
+      <Card className="lg:col-span-2">
+        <h3 className="text-2xl font-black">Цели и цифры</h3>
+        <p className="mt-1 text-muted">Бывший OKR. Теперь просто план / факт.</p>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {data.okr.keyResults.map((kr) => (
+            <div key={kr.id} className="rounded-2xl bg-black/20 p-4">
+              <div className="flex justify-between gap-3"><b>{kr.title}</b><span className="text-muted">{kr.unit === '₽' ? money(kr.current) : kr.current} / {kr.unit === '₽' ? money(kr.target) : kr.target} {kr.unit}</span></div>
+              <div className="mt-3"><Progress value={pct(kr.current, kr.target)} /></div>
+              <div className="mt-3 grid grid-cols-2 gap-2"><Field type="number" value={kr.current} onChange={(e) => update((d) => { d.okr.keyResults.find((x) => x.id === kr.id)!.current = +e.target.value; return d; })} /><Field type="number" value={kr.target} onChange={(e) => update((d) => { d.okr.keyResults.find((x) => x.id === kr.id)!.target = +e.target.value; return d; })} /></div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <h3 className="text-2xl font-black">Дофамин</h3>
+        <div className="mt-3 text-5xl font-black text-accent">{dopaminePoints}</div>
+        <p className="mt-2 text-muted">очков за сегодняшний минимум</p>
+        <p className="mt-4 rounded-2xl bg-black/20 p-3 font-bold">{todayComplete ? 'Минимум закрыт. День не слит.' : 'Закрой 5 пунктов — день засчитается сам.'}</p>
       </Card>
 
       <Card>
         <h3 className="text-2xl font-black">Сегодня</h3>
         {todayTasks.length ? todayTasks.map((t) => <TaskRow key={t.id} t={t} update={update} />) : <Empty text="Нет задач на сегодня" />}
         <div className="mt-4 grid grid-cols-2 gap-2">
-          <Button
-            onClick={() => {
-              const title = prompt('Идея');
-              if (title)
-                update((d) => {
-                  d.ideas.unshift({
-                    id: uid(),
-                    title,
-                    description: '',
-                    createdAt: today,
-                    category: 'другое',
-                    status: 'новая',
-                    qMoney: null,
-                    qGoal: null,
-                    qStart: null,
-                  });
-                  return d;
-                }, 'Идея добавлена');
-            }}
-          >
-            Добавить идею
-          </Button>
-          <Button
-            onClick={() => {
-              const title = prompt('Задача');
-              if (title) addTask(title, 'today');
-            }}
-          >
-            Добавить задачу
-          </Button>
+          <Button onClick={() => { const title = prompt('Идея'); if (title) update((d) => { d.ideas.unshift({ id: uid(), title, description: '', createdAt: today, category: 'другое', status: 'новая', qMoney: null, qGoal: null, qStart: null }); return d; }, 'Идея добавлена'); }}>Добавить идею</Button>
+          <Button onClick={() => { const title = prompt('Задача'); if (title) addTask(title, 'today'); }}>Добавить задачу</Button>
         </div>
       </Card>
 
-      <Card>
-        <h3 className="text-2xl font-black">В работе 1–3</h3>
-        {doing.length ? doing.map((t) => <TaskRow key={t.id} t={t} update={update} />) : <Empty text="Фокус пуст. Выбери одну задачу." />}
-      </Card>
+      <Card><h3 className="text-2xl font-black">В работе 1–3</h3>{doing.length ? doing.map((t) => <TaskRow key={t.id} t={t} update={update} />) : <Empty text="Фокус пуст. Выбери одну задачу." />}</Card>
 
       <Card>
-        <h3 className="text-2xl font-black">Ключевые метрики сегодня</h3>
-        {(['touches', 'followUps', 'content', 'leads'] as (keyof Metrics)[]).map((k) => (
-          <p key={k} className="mt-3 flex justify-between border-b border-white/5 pb-2">
-            <span className="text-muted">{metricLabels[k]}</span>
-            <b>{todayMetrics[k]}</b>
-          </p>
-        ))}
+        <h3 className="text-2xl font-black">Минимум сегодня</h3>
+        {minimumKeys.map((k) => <p key={k} className="mt-3 flex justify-between border-b border-white/5 pb-2"><span className="text-muted">{metricLabels[k]}</span><b>{todayMetrics[k]} / {data.dailyMinimum[k]}</b></p>)}
       </Card>
 
-      <Card>
-        <h3 className="text-2xl font-black">Быстрые действия</h3>
-        <Button onClick={() => setTab('review')} className="mt-4 w-full">
-          Завершить спринт
-        </Button>
-      </Card>
+      <Card><h3 className="text-2xl font-black">Быстрые действия</h3><Button onClick={() => setTab('sprint')} className="mt-4 w-full">Заполнить факт дня</Button><Button onClick={() => setTab('review')} className="mt-3 w-full bg-white/10 hover:bg-white/20">Завершить спринт</Button></Card>
     </section>
   );
 }
 
 function Inbox({ data, update }: { data: AppData; update: UpdateFn }) {
   const [title, setTitle] = useState('');
-
   return (
     <div className="grid gap-5 lg:grid-cols-3">
-      <Card>
-        <h2 className="text-3xl font-black">Новая идея</h2>
-        <Field placeholder="Название" value={title} onChange={(e) => setTitle(e.target.value)} />
-        <Button
-          className="mt-3 w-full"
-          onClick={() => {
-            if (!title) return;
-            update((d) => {
-              d.ideas.unshift({
-                id: uid(),
-                title,
-                description: '',
-                createdAt: todayISO(),
-                category: 'другое',
-                status: 'новая',
-                qMoney: null,
-                qGoal: null,
-                qStart: null,
-              });
-              return d;
-            }, 'Идея в инбоксе');
-            setTitle('');
-          }}
-        >
-          Записать
-        </Button>
-      </Card>
-
-      <div className="grid gap-4 lg:col-span-2">
-        {data.ideas.map((i) => (
-          <IdeaCard key={i.id} idea={i} update={update} />
-        ))}
-      </div>
+      <Card><h2 className="text-3xl font-black">Новая идея</h2><Field placeholder="Название" value={title} onChange={(e) => setTitle(e.target.value)} /><Button className="mt-3 w-full" onClick={() => { if (!title) return; update((d) => { d.ideas.unshift({ id: uid(), title, description: '', createdAt: todayISO(), category: 'другое', status: 'новая', qMoney: null, qGoal: null, qStart: null }); return d; }, 'Идея в инбоксе'); setTitle(''); }}>Записать</Button></Card>
+      <div className="grid gap-4 lg:col-span-2">{data.ideas.map((i) => <IdeaCard key={i.id} idea={i} update={update} />)}</div>
     </div>
   );
 }
 
 function IdeaCard({ idea, update }: { idea: Idea; update: UpdateFn }) {
   const yes = [idea.qMoney, idea.qGoal, idea.qStart].filter(Boolean).length;
-  const rec = yes >= 2 ? 'делать сейчас' : yes < 2 && [idea.qMoney, idea.qGoal, idea.qStart].every((v) => v !== null) ? 'отложить' : 'оценить';
+  const answered = [idea.qMoney, idea.qGoal, idea.qStart].every((v) => v !== null);
+  const rec = yes >= 2 ? 'делать сейчас' : answered ? 'отложить' : 'оценить';
+  const sendToKanban = (d: AppData, id: string) => {
+    const selected = d.ideas.find((x) => x.id === id);
+    if (!selected) return;
+    selected.status = 'выбрана';
+    if (!d.tasks.some((t) => t.description === `idea:${id}`)) {
+      const task: Task = { id: uid(), title: selected.title, description: `idea:${id}`, column: 'week', done: false, createdAt: todayISO() };
+      d.tasks.unshift(task);
+      d.sprint.taskIds.push(task.id);
+    }
+  };
 
   return (
     <Card>
-      <div className="flex flex-col gap-3 md:flex-row md:justify-between">
-        <div>
-          <h3 className="text-2xl font-black">{idea.title}</h3>
-          <p className="text-muted">
-            {idea.createdAt} · {idea.category} · {idea.status}
-          </p>
-        </div>
-        <b className="text-accent">{rec}</b>
-      </div>
-
+      <div className="flex flex-col gap-3 md:flex-row md:justify-between"><div><h3 className="text-2xl font-black">{idea.title}</h3><p className="text-muted">{idea.createdAt} · {idea.category} · {idea.status}</p></div><b className="text-accent">{rec}</b></div>
       <div className="mt-4 grid gap-2 md:grid-cols-3">
-        {[
+        {([
           ['qMoney', 'деньги за 14 дней?'],
           ['qGoal', 'вяжется с целью?'],
           ['qStart', 'без подготовки?'],
-        ].map(([k, label]) => (
-          <label key={k} className="rounded-2xl bg-black/20 p-3">
-            <span className="block text-muted">{label}</span>
-            <select
-              value={String((idea as any)[k])}
-              onChange={(e) =>
-                update((d) => {
-                  (d.ideas.find((x) => x.id === idea.id) as any)[k] = e.target.value === 'null' ? null : e.target.value === 'true';
-                  return d;
-                }, 'Оценка сохранена')
-              }
-              className="mt-2 w-full bg-transparent"
-            >
-              <option value="null">—</option>
-              <option value="true">да</option>
-              <option value="false">нет</option>
-            </select>
-          </label>
-        ))}
+        ] as const).map(([k, label]) => <label key={k} className="rounded-2xl bg-black/20 p-3"><span className="block text-muted">{label}</span><select value={String(idea[k])} onChange={(e) => update((d) => { const x = d.ideas.find((a) => a.id === idea.id)!; (x as any)[k] = e.target.value === 'null' ? null : e.target.value === 'true'; return d; }, 'Оценка сохранена')} className="mt-2 w-full bg-transparent"><option value="null">—</option><option value="true">да</option><option value="false">нет</option></select></label>)}
       </div>
-
-      <div className="mt-3 flex gap-2">
-        <select
-          value={idea.status}
-          onChange={(e) =>
-            update((d) => {
-              d.ideas.find((x) => x.id === idea.id)!.status = e.target.value as IdeaStatus;
-              return d;
-            }, 'Статус изменён')
-          }
-          className="rounded-2xl bg-black/30 p-3"
-        >
-          {statuses.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
-        </select>
-
-        <select
-          value={idea.category}
-          onChange={(e) =>
-            update((d) => {
-              d.ideas.find((x) => x.id === idea.id)!.category = e.target.value as IdeaCategory;
-              return d;
-            }, 'Категория изменена')
-          }
-          className="rounded-2xl bg-black/30 p-3"
-        >
-          {cats.map((c) => (
-            <option key={c}>{c}</option>
-          ))}
-        </select>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <select value={idea.status} onChange={(e) => update((d) => { const status = e.target.value as IdeaStatus; d.ideas.find((x) => x.id === idea.id)!.status = status; if (status === 'выбрана') sendToKanban(d, idea.id); return d; }, status === 'выбрана' ? 'Идея ушла в Kanban' : 'Статус изменён')} className="rounded-2xl bg-black/30 p-3">{statuses.map((s) => <option key={s}>{s}</option>)}</select>
+        <select value={idea.category} onChange={(e) => update((d) => { d.ideas.find((x) => x.id === idea.id)!.category = e.target.value as IdeaCategory; return d; }, 'Категория изменена')} className="rounded-2xl bg-black/30 p-3">{cats.map((c) => <option key={c}>{c}</option>)}</select>
+        <GhostButton onClick={() => update((d) => { sendToKanban(d, idea.id); return d; }, 'Идея ушла в Kanban')}>В работу → Kanban</GhostButton>
       </div>
     </Card>
   );
 }
 
-function Kanban({
-  data,
-  update,
-  moveTask,
-  addTask,
-}: {
-  data: AppData;
-  update: UpdateFn;
-  moveTask: (id: string, c: KanbanColumn) => void;
-  addTask: (title: string, c: KanbanColumn) => void;
-}) {
+function Kanban({ data, update, moveTask, addTask }: { data: AppData; update: UpdateFn; moveTask: (id: string, c: KanbanColumn) => void; addTask: (title: string, c: KanbanColumn) => void }) {
   return (
     <div className="grid gap-4 xl:grid-cols-5">
-      {(Object.keys(columns) as KanbanColumn[]).map((c) => (
-        <Card key={c} className="min-h-80">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-black">{columns[c]}</h2>
-            <button
-              onClick={() => {
-                const title = prompt('Новая задача');
-                if (title) addTask(title, c);
-              }}
-              className="rounded-xl bg-white/10 px-3 py-1"
-            >
-              +
-            </button>
-          </div>
-
-          {data.tasks
-            .filter((t) => t.column === c)
-            .map((t) => (
-              <div key={t.id} className="mb-3 rounded-2xl bg-black/25 p-3">
-                <Field
-                  value={t.title}
-                  onChange={(e) =>
-                    update((d) => {
-                      d.tasks.find((x) => x.id === t.id)!.title = e.target.value;
-                      return d;
-                    })
-                  }
-                />
-                <div className="mt-2 flex gap-2">
-                  <select value={t.column} onChange={(e) => moveTask(t.id, e.target.value as KanbanColumn)} className="w-full rounded-xl bg-card p-2">
-                    {Object.entries(columns).map(([id, label]) => (
-                      <option key={id} value={id}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() =>
-                      update((d) => {
-                        d.tasks = d.tasks.filter((x) => x.id !== t.id);
-                        d.sprint.taskIds = d.sprint.taskIds.filter((taskId) => taskId !== t.id);
-                        return d;
-                      }, 'Удалено')
-                    }
-                    className="rounded-xl bg-bad/20 px-3"
-                  >
-                    ×
-                  </button>
-                </div>
-              </div>
-            ))}
-
-          {!data.tasks.some((t) => t.column === c) && <Empty text="Пусто" />}
-        </Card>
-      ))}
+      {(Object.keys(columns) as KanbanColumn[]).map((c) => <Card key={c} className="min-h-80"><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-black">{columns[c]}</h2><button onClick={() => { const title = prompt('Новая задача'); if (title) addTask(title, c); }} className="rounded-xl bg-white/10 px-3 py-1">+</button></div>{data.tasks.filter((t) => t.column === c).map((t) => <div key={t.id} className="mb-3 rounded-2xl bg-black/25 p-3"><Field value={t.title} onChange={(e) => update((d) => { d.tasks.find((x) => x.id === t.id)!.title = e.target.value; return d; })} /><div className="mt-2 flex gap-2"><select value={t.column} onChange={(e) => moveTask(t.id, e.target.value as KanbanColumn)} className="w-full rounded-xl bg-card p-2">{Object.entries(columns).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><button onClick={() => update((d) => { d.tasks = d.tasks.filter((x) => x.id !== t.id); d.sprint.taskIds = d.sprint.taskIds.filter((taskId) => taskId !== t.id); return d; }, 'Удалено')} className="rounded-xl bg-bad/20 px-3">×</button></div></div>)}{!data.tasks.some((t) => t.column === c) && <Empty text="Пусто" />}</Card>)}
     </div>
   );
 }
 
 function Sprint({ data, update, weekDays }: { data: AppData; update: UpdateFn; weekDays: string[] }) {
   const today = todayISO();
-  const metrics = data.sprint.dailyMetrics[today] || emptyMetrics();
-
+  const metrics = { ...emptyMetrics(), ...(data.sprint.dailyMetrics[today] || {}) };
   return (
     <div className="grid gap-5 lg:grid-cols-2">
-      <Card>
-        <h2 className="text-3xl font-black">{data.sprint.title}</h2>
-        <p className="mt-2 text-muted">
-          {data.sprint.startDate} — {data.sprint.endDate}
-        </p>
-
-        <label className="mt-4 block text-sm text-muted">Название спринта</label>
-        <Field
-          value={data.sprint.title}
-          onChange={(e) =>
-            update((d) => {
-              d.sprint.title = e.target.value;
-              return d;
-            })
-          }
-        />
-
-        <label className="mt-4 block text-sm text-muted">Цель спринта на неделю</label>
-        <Field
-          value={data.sprint.goal}
-          onChange={(e) =>
-            update((d) => {
-              d.sprint.goal = e.target.value;
-              return d;
-            })
-          }
-        />
-
-        <h3 className="mt-6 text-2xl font-black">Минимум дня</h3>
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {(['touches', 'followUps', 'content'] as const).map((k) => (
-            <label key={k} className="text-muted">
-              {metricLabels[k]}
-              <Field
-                type="number"
-                value={data.dailyMinimum[k]}
-                onChange={(e) =>
-                  update((d) => {
-                    d.dailyMinimum[k] = +e.target.value;
-                    return d;
-                  })
-                }
-              />
-            </label>
-          ))}
-        </div>
-      </Card>
-
-      <Card>
-        <h3 className="text-2xl font-black">Календарь недели</h3>
-        <div className="mt-4 grid grid-cols-7 gap-2">
-          {weekDays.map((day) => (
-            <button
-              key={day}
-              onClick={() =>
-                update((d) => {
-                  d.sprint.dayMarks[day] = (((d.sprint.dayMarks[day] || 0) + 1) % 4) as DayMark;
-                  return d;
-                }, 'День обновлён')
-              }
-              className="rounded-2xl bg-black/25 p-3"
-            >
-              <span className="block text-xs text-muted">{day.slice(5)}</span>
-              <b className="text-2xl text-accent">{data.sprint.dayMarks[day] ?? 0}</b>
-            </button>
-          ))}
-        </div>
-      </Card>
-
-      <Card className="lg:col-span-2">
-        <h3 className="text-2xl font-black">Факт за сегодня</h3>
-        <div className="mt-3 grid gap-3 md:grid-cols-4">
-          {(Object.keys(metricLabels) as (keyof Metrics)[]).map((k) => (
-            <label key={k} className="text-muted">
-              {metricLabels[k]}
-              <Field
-                type="number"
-                value={metrics[k]}
-                onChange={(e) =>
-                  update((d) => {
-                    d.sprint.dailyMetrics[today] ||= emptyMetrics();
-                    d.sprint.dailyMetrics[today][k] = +e.target.value;
-                    return d;
-                  })
-                }
-              />
-            </label>
-          ))}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function OKRView({ data, update }: { data: AppData; update: UpdateFn }) {
-  return (
-    <div className="grid gap-5">
-      <Card>
-        <p className="text-muted">Objective</p>
-        <Field
-          value={data.okr.objective}
-          onChange={(e) =>
-            update((d) => {
-              d.okr.objective = e.target.value;
-              return d;
-            })
-          }
-        />
-      </Card>
-
-      {data.okr.keyResults.map((kr) => (
-        <Card key={kr.id}>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <b className="text-xl">{kr.title}</b>
-            <span className="text-muted">
-              {kr.current} / {kr.target} {kr.unit}
-            </span>
-          </div>
-          <div className="mt-3">
-            <Progress value={pct(kr.current, kr.target)} />
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Field
-              type="number"
-              value={kr.current}
-              onChange={(e) =>
-                update((d) => {
-                  d.okr.keyResults.find((x) => x.id === kr.id)!.current = +e.target.value;
-                  return d;
-                })
-              }
-            />
-            <Field
-              type="number"
-              value={kr.target}
-              onChange={(e) =>
-                update((d) => {
-                  d.okr.keyResults.find((x) => x.id === kr.id)!.target = +e.target.value;
-                  return d;
-                })
-              }
-            />
-          </div>
-        </Card>
-      ))}
+      <Card><h2 className="text-3xl font-black">{data.sprint.title}</h2><p className="mt-2 text-muted">{data.sprint.startDate} — {data.sprint.endDate}</p><label className="mt-4 block text-sm text-muted">Название спринта</label><Field value={data.sprint.title} onChange={(e) => update((d) => { d.sprint.title = e.target.value; return d; })} /><label className="mt-4 block text-sm text-muted">Цель спринта на неделю</label><Field value={data.sprint.goal} onChange={(e) => update((d) => { d.sprint.goal = e.target.value; return d; })} /><h3 className="mt-6 text-2xl font-black">Минимум дня</h3><div className="mt-3 grid gap-2 md:grid-cols-2">{minimumKeys.map((k) => <label key={k} className="text-muted">{metricLabels[k]}<Field type="number" value={data.dailyMinimum[k]} onChange={(e) => update((d) => { d.dailyMinimum[k] = +e.target.value; syncDayMark(d, today); return d; })} /></label>)}</div></Card>
+      <Card><h3 className="text-2xl font-black">Календарь недели</h3><p className="mt-1 text-muted">Дни отмечаются автоматически по минимуму.</p><div className="mt-4 grid grid-cols-7 gap-2">{weekDays.map((day) => { const dayMetrics = { ...emptyMetrics(), ...(data.sprint.dailyMetrics[day] || {}) }; const complete = isDayComplete(dayMetrics, data.dailyMinimum); return <div key={day} className="rounded-2xl bg-black/25 p-3 text-center"><span className="block text-xs text-muted">{day.slice(5)}</span><b className={`text-2xl ${complete ? 'text-good' : 'text-muted'}`}>{complete ? '✓' : '—'}</b></div>; })}</div></Card>
+      <Card className="lg:col-span-2"><h3 className="text-2xl font-black">Факт за сегодня</h3><p className="mt-1 text-muted">Заполни 5 обязательных пунктов — день засчитается сам.</p><div className="mt-3 grid gap-3 md:grid-cols-3">{factsKeys.map((k) => <label key={k} className="text-muted">{metricLabels[k]}<Field type="number" value={metrics[k]} onChange={(e) => update((d) => { d.sprint.dailyMetrics[today] ||= emptyMetrics(); d.sprint.dailyMetrics[today] = { ...emptyMetrics(), ...d.sprint.dailyMetrics[today], [k]: +e.target.value }; syncDayMark(d, today); return d; })} /></label>)}</div></Card>
     </div>
   );
 }
 
 function ReviewView({ data, update, weekPct }: { data: AppData; update: UpdateFn; weekPct: number }) {
   const r = data.sprint.review || { worked: '', failed: '', money: '', trash: '', next: '', remove: '' };
-  const set = (k: keyof Review, v: string) =>
-    update((d) => {
-      d.sprint.review ||= { worked: '', failed: '', money: '', trash: '', next: '', remove: '' };
-      d.sprint.review[k] = v;
-      return d;
-    });
-
+  const set = (k: keyof Review, v: string) => update((d) => { d.sprint.review ||= { worked: '', failed: '', money: '', trash: '', next: '', remove: '' }; d.sprint.review[k] = v; return d; });
   return (
     <div className="grid gap-5 lg:grid-cols-2">
-      <Card>
-        <h2 className="text-3xl font-black">Еженедельное ревью</h2>
-        {[
-          ['worked', 'что сработало?'],
-          ['failed', 'что не сработало?'],
-          ['money', 'что принесло деньги или ответы?'],
-          ['trash', 'что было мусором?'],
-          ['next', 'что беру в следующий спринт?'],
-          ['remove', 'что убираю?'],
-        ].map(([k, label]) => (
-          <label key={k} className="mt-4 block text-muted">
-            {label}
-            <Area value={(r as any)[k]} onChange={(e) => set(k as keyof Review, e.target.value)} />
-          </label>
-        ))}
-      </Card>
-
-      <Card>
-        <h2 className="text-3xl font-black">Итог недели</h2>
-        <div className="mt-4 text-6xl font-black text-accent">{weekPct}%</div>
-        <Progress value={weekPct} />
-        <p className="mt-5">
-          <b>Лучшие действия:</b> {r.worked || 'заполни ревью'}
-        </p>
-        <p className="mt-3">
-          <b>Слабые места:</b> {r.failed || 'пока не указано'}
-        </p>
-        <p className="mt-3 text-muted">
-          Рекомендация: оставь только действия, которые дали ответы, деньги или движение. Остальное — в мусор или отложенные.
-        </p>
-        <Button
-          className="mt-6 w-full"
-          onClick={() =>
-            update((d) => {
-              d.noWasteDays = 0;
-              return d;
-            }, 'Спринт завершён')
-          }
-        >
-          Завершить спринт
-        </Button>
-      </Card>
+      <Card><h2 className="text-3xl font-black">Еженедельное ревью</h2>{([['worked', 'что сработало?'], ['failed', 'что не сработало?'], ['money', 'что принесло деньги или ответы?'], ['trash', 'что было мусором?'], ['next', 'что беру в следующий спринт?'], ['remove', 'что убираю?']] as const).map(([k, label]) => <label key={k} className="mt-4 block text-muted">{label}<Area value={r[k]} onChange={(e) => set(k, e.target.value)} /></label>)}</Card>
+      <Card><h2 className="text-3xl font-black">Итог недели</h2><div className="mt-4 text-6xl font-black text-accent">{weekPct}%</div><Progress value={weekPct} /><p className="mt-5"><b>Лучшие действия:</b> {r.worked || 'заполни ревью'}</p><p className="mt-3"><b>Слабые места:</b> {r.failed || 'пока не указано'}</p><p className="mt-3 text-muted">Рекомендация: оставь только действия, которые дали ответы, деньги или движение. Остальное — в мусор или отложенные.</p><Button className="mt-6 w-full" onClick={() => update((d) => d, 'Спринт завершён')}>Завершить спринт</Button></Card>
     </div>
   );
 }
